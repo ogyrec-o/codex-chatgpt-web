@@ -1301,6 +1301,111 @@ describe("trusted Codex task environment continuity", () => {
     ).sandboxPolicy).toEqual({ type: "readOnly", networkAccess: true });
   });
 
+  test("deduplicates Codex 0.153.4 workspace-write entries without widening authority", () => {
+    const codexHome = mkdtempSync(join(tmpdir(), "codex-chatgpt-rollout-workspace-write-"));
+    temporaryRoots.push(codexHome);
+    const rolloutPath = join(
+      codexHome,
+      "sessions",
+      "2026",
+      "09",
+      "04",
+      `rollout-2026-09-04T15-30-36-${rolloutThreadId}.jsonl`,
+    );
+    const additiveRootA = resolve(root, "..", "rollout-profile-gradle");
+    const additiveRootB = resolve(root, "..", "rollout-profile-cargo");
+    const extraRoot = resolve(root, "..", "rollout-profile-extra");
+    const profileEntries: Record<string, unknown>[] = [
+      { path: { type: "special", value: { kind: "root" } }, access: "read" },
+      { path: { type: "path", path: root }, access: "write" },
+      { path: { type: "path", path: additiveRootA }, access: "write" },
+      { path: { type: "path", path: additiveRootB }, access: "write" },
+      { path: { type: "special", value: { kind: "slash_tmp" } }, access: "write" },
+      { path: { type: "special", value: { kind: "tmpdir" } }, access: "write" },
+      { path: { type: "path", path: additiveRootA }, access: "write" },
+      { path: { type: "path", path: additiveRootB }, access: "write" },
+    ];
+    mkdirSync(dirname(rolloutPath), { recursive: true });
+
+    const writeWorkspaceTurn = (options: {
+      entries?: Record<string, unknown>[];
+      sandboxWritableRoots?: string[];
+      workspaceRoots?: string[];
+      sandboxNetwork?: boolean;
+      profileNetwork?: "enabled" | "restricted";
+      splitEntries?: Record<string, unknown>[];
+    } = {}): void => {
+      const entries = options.entries ?? profileEntries;
+      const sandboxWritableRoots = options.sandboxWritableRoots ?? [additiveRootA, additiveRootB];
+      const workspaceRoots = options.workspaceRoots ?? [root, additiveRootA, additiveRootB];
+      const splitEntries = options.splitEntries ?? entries;
+      writeFileSync(rolloutPath, [
+        JSON.stringify(childSessionMeta()),
+        JSON.stringify(childTurnContext(rolloutTurnId, {
+          workspace_roots: workspaceRoots,
+          sandbox_policy: {
+            type: "workspace-write",
+            writable_roots: sandboxWritableRoots,
+            network_access: options.sandboxNetwork ?? true,
+            exclude_tmpdir_env_var: false,
+            exclude_slash_tmp: false,
+          },
+          permission_profile: {
+            type: "managed",
+            file_system: { type: "restricted", entries },
+            network: options.profileNetwork ?? "enabled",
+          },
+          file_system_sandbox_policy: { kind: "restricted", entries: splitEntries },
+        })),
+      ].join("\n") + "\n");
+    };
+    const resolveWorkspaceTurn = () => new ChatGptThreadEnvironmentStore(undefined, Date.now, codexHome).resolve(
+      environmentlessChild(rolloutTurnId, "workspace-write", [root, additiveRootA, additiveRootB]),
+    );
+
+    writeWorkspaceTurn();
+    expect(resolveWorkspaceTurn()).toEqual({
+      cwd: root,
+      roots: [root, additiveRootA, additiveRootB],
+      writableRoots: [root, additiveRootA, additiveRootB],
+      sandboxPolicy: {
+        type: "workspaceWrite",
+        writableRoots: [root, additiveRootA, additiveRootB],
+        networkAccess: true,
+      },
+      tools: [],
+    });
+
+    const profileOnlyExtra = [
+      ...profileEntries,
+      { path: { type: "path", path: extraRoot }, access: "write" },
+    ];
+    writeWorkspaceTurn({ entries: profileOnlyExtra });
+    expect(resolveWorkspaceTurn).toThrow("workspace-write permission profile is inconsistent");
+
+    writeWorkspaceTurn({
+      sandboxWritableRoots: [additiveRootA, additiveRootB, extraRoot],
+      workspaceRoots: [root, additiveRootA, additiveRootB, extraRoot],
+    });
+    expect(resolveWorkspaceTurn).toThrow("workspace-write permission profile is inconsistent");
+
+    writeWorkspaceTurn({ workspaceRoots: [root] });
+    expect(resolveWorkspaceTurn).toThrow("workspace-write permission profile is inconsistent");
+
+    const relativeWrite = [
+      ...profileEntries,
+      { path: { type: "path", path: "relative-write-root" }, access: "write" },
+    ];
+    writeWorkspaceTurn({ entries: relativeWrite });
+    expect(resolveWorkspaceTurn).toThrow("workspace-write permission profile is inconsistent");
+
+    writeWorkspaceTurn({ sandboxNetwork: false });
+    expect(resolveWorkspaceTurn).toThrow("workspace-write permission profile is inconsistent");
+
+    writeWorkspaceTurn({ splitEntries: profileEntries.slice(0, -1) });
+    expect(resolveWorkspaceTurn).toThrow("workspace-write permission profile is inconsistent");
+  });
+
   test("fails closed when canonical rollout proof is absent or permission fields diverge", () => {
     const codexHome = mkdtempSync(join(tmpdir(), "codex-chatgpt-rollout-fail-closed-"));
     temporaryRoots.push(codexHome);

@@ -475,7 +475,6 @@ function exactManagedWorkspaceWriteProfile(
   const uniqueDirectWrites = [...new Map(directWrites.map(path => (
     [pathIdentity(path), path] as const
   ))).values()];
-  if (uniqueDirectWrites.length !== directWrites.length) return undefined;
   const expectedIdentities = new Set(uniqueExpectedWritableRoots.map(pathIdentity));
   if (uniqueDirectWrites.some(path => !expectedIdentities.has(pathIdentity(path)))) return undefined;
   if (projectRootsWrite === 0 && uniqueDirectWrites.length !== uniqueExpectedWritableRoots.length) return undefined;
